@@ -1,0 +1,104 @@
+---
+title: "Intro2Rmarkdown"
+author: "Lexie Christopoulos"
+date: "10/22/2020"
+output: github_document
+---
+
+#title 
+##title  
+###subtitle 
+
+*italicize* 
+**bold** 
+
+Make:
+1. numbered lists 
+
+Make: 
+-unnumbered lists 
+
+[link here](https://www.google.com)
+
+#Code Chunk and Load Libraries 
+Add new code chunk by clicking on insert and chosing "R" OR the shortcut: ctrl + alt +i 
+```{r loading packages , message=FALSE, warning=FALSE}
+library(tidyverse)
+library(readxl)
+library(lubridate)
+#install.packages("RColorBrewer")
+library(RColorBrewer)
+library(ggplot2)
+library(dplyr)
+```
+
+#Load Data 
+
+```{r}
+socal.fires <- readRDS("C:/Users/aechr/Desktop/github/144l_students/Output_Data/week1/socal_fires_data.rds")
+```
+
+#Look at Data 
+
+```{r}
+glimpse(socal.fires)
+```
+
+#Make Plot dataframe 
+
+```{r}
+plot.data <- socal.fires %>% 
+  rename( county = County_Unit, fire = Fire_Name, start = Start_Date, end = Controlled_Date, acres = Total_Acres_Burned, cause = Cause) %>% 
+  mutate(county = ifelse( fire == "THOMAS", "VENTURA", county), year = year(start))
+```
+
+#Summary Statistics and *group_by*
+
+```{r}
+summary.data <- plot.data %>% 
+  group_by(county) %>% 
+  summarize(total_acres = sum(acres)) %>% 
+  arrange(desc(total_acres)) %>% 
+  ungroup()
+
+```
+
+
+```{r}
+county_year_summary.data <- plot.data %>% 
+  group_by(county, year) %>% 
+  summarize(total_acres = sum(acres)) %>% 
+  arrange(desc(year), desc(total_acres)) %>% 
+  ungroup()
+
+view(county_year_summary.data)
+```
+
+
+#Plot Data
+
+```{r}
+ggplot(summary.data, aes(x=county, y=total_acres))+
+  geom_col()+
+  labs(x = "County", y = "Total Acres Burned" )+
+  theme_bw()+
+  coord_flip()
+
+```
+
+```{r}
+summary_factor <- summary.data %>% 
+  mutate(county = factor(county, levels = county))
+```
+
+```{r}
+ggplot(summary_factor, aes(x=county, y=total_acres))+
+  geom_col(aes(fill = county))+
+  labs(x = "County", y = "Total Acres Burned", title = "Total Acres Burned 2014-2018" )+
+  scale_fill_brewer(palette = "Spectral")+
+  theme_bw()+
+  coord_flip()+
+  guides(fill = FALSE)
+
+```
+
