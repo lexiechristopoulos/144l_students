@@ -1,0 +1,234 @@
+---
+title: "Week 5 Coding Taxanomic Analysis"
+author: "Lexie Christopoulos"
+date: "11/13/2020"
+output: github_document
+---
+
+#Load packages 
+
+```{r}
+library(tidyverse)
+library(dada2)
+library(ShortRead)
+```
+
+
+#Import file names 
+
+```{r}
+path <- "C:/Users/aechr/Desktop/github/144l_students/Input_Data/week5/EEMB144L_2018_fastq/"
+
+#store the names of the forward and reverse files as lists 
+fnFs <- list.files(path, pattern = "_R1_001.fastq", full.names = TRUE)
+
+fnRs <- list.files(path, pattern = "_R2_001.fastq", full.names = TRUE)
+```
+
+
+#Retrive orientation of primers
+
+The primers targeted the V4 region and are known 514F-Y and 806RB primers
+
+```{r}
+#store the forward and reverse primers 
+
+FWD = "GTGYCAGCMGCCGCGGTAA"
+REV = "GGACTACNVGGGTWTCTAAT"
+
+#now store all the orientations of your forward and reverse primers 
+allOrients <- function(primer) {
+  #The BioStrings work w/ DNAString objects rather than character vectors 
+  require(Biostrings)
+  dna <- DNAString(primer)
+  orients <- c(Foward = dna, Complement = complement(dna), Reverse = reverse(dna),RevComp = reverseComplement(dna))
+  #Convert back to character vector 
+  return(sapply(orients, toString))
+}
+
+#store the forward and reverse orientations seperately
+FWD.orients <- allOrients(FWD)
+REV.orients <- allOrients(REV)
+
+#view the orientations of the primers 
+FWD.orients
+```
+
+
+```{r}
+REV.orients
+```
+
+
+#Search for primers 
+
+```{r}
+primerHits <- function(primer, fn) {
+  #counts number of reads in which the prime is found 
+  nhits <- vcountPattern(primer, sread(readFastq(fn)), fixed = FALSE)
+  return(sum(nhits > 0))
+}
+
+rbind(FWD.ForwardReads = sapply(FWD.orients, primerHits, fn = fnFs[[1]]),
+      FWD.ReverseReads = sapply(FWD.orients, primerHits, fn = fnRs[[1]]),
+      REV.FowardReads = sapply(REV.orients, primerHits, fn = fnFs[[1]]),
+      REV.ReverseReads = sapply(REV.orients, primerHits, fn = fnRs[[1]]))
+```
+
+There are only hit of the reverse compliment in the FWD.ReverseReads and the REV.ForwardReads. It indicates that the reads are long enough to get the primers on the end. We can trime those out with the MergePairs function later, by adding trimOverhang = T.
+
+#Inspect read quality profiles 
+
+You should look at atleast some of the quality profiles to asses the quality of the sequencing run. 
+
+##Foward Reads
+
+```{r fig.height=10, fig.width=12}
+plotQualityProfile(fnFs[1:15])
+```
+
+In grey-scale is the heat map of the frequency of each quality score at each base position. The mean quality score at each position is shown by the green line, and the quartiles of the quality score distribution by the orange line. 
+
+The DADA2 Tutorial advises trimming the last few nucleotides to avoid less well-controlled errors that can arise there. These quality profiles do not suggest that truncating at position 200 for the forward reads would help control errors. 
+
+#Reverse Reads 
+
+```{r fig.height=10, fig.width=12}
+plotQualityProfile(fnRs[1:15])
+```
+
+
+The reverse reads are of worse quaility, especially at the end, which is common in Illumina sequencing. This isn't too worrisome, as DADA2 incorperates quality information into its error model which makes the algorithm robust ti lower quality sequence, but trimming as the average qualities crash will improve the algorithm's sensitivity to rare sequence variants. Based on these profiles, we will truncate the reverse reads at position 150 where the quality distrubution crashes.
+
+
+#Filtering and Trimming 
+
+```{r}
+#Get the sample names 
+#define the basename of the fnFs as the first part of each fastQ file name until "_L"
+#apply this to all samples 
+sample.names <- sapply(strsplit(basename(fnFs), "_L"), '[',1)
+sample.names 
+#create a "filtered" folder in the working directory as a place to put all the new filtered fastQ files 
+filt_path <- file.path(path, "filtered")
+#add the apporpriate designation string to any new files made that will be put into the "filtered" folder
+filtFs <- file.path(filt_path, paste0(sample.names, "_F_filt.fastq"))
+filtRs <- file.path(filt_path, paste0(sample.names, "_R_filt.fastq"))
+```
+
+We're using standard filtering parameters. 
+
+1. dada2 generally advises trimming the last few nucleotides for weird sequecing errors that can pop up there. 
+2. maxEE is the max number of expected errors (calculated from Q's) to allow in each read. This is a probability calculation. 
+3. minQ is a threshold Q - and read with a Q < minQ after truncating reads gets discarded. This isn't important for 16/18S.
+
+
+```{r}
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen = c(200,150), maxN = 0, maxEE = c(2,2), truncQ = 2, rm.phix = TRUE, compress = TRUE)
+#look at the output, this tells you how many reads were removed 
+out
+```
+
+
+#Learn the error rates 
+
+```{r}
+errF <- learnErrors(filtFs, multithread = TRUE)
+errR <- learnErrors(filtRs, multithread = TRUE)
+```
+
+
+```{r fig.height=10, fig.width=12, fig.align="center", message=FALSE, warning=FALSE}
+plotErrors(errF, nominalQ = TRUE)
+```
+
+
+```{r fig.height=10, fig.width=12, fig.align= "center", message=FALSE, warning=FALSE}
+plotErrors(errR, nominalQ = TRUE)
+```
+
+The error rates for each possible transition (A->C, A->G, ...) are shown. Points are the observed error rates for each consensus quality score. The black line shows the estimated error rates after convergence of the machine-learning algorithms. The red line shows the error rates expected under the nominal definition of the Q-score. Here the estimated error rates (black line) are a good fit to the observed rates (points), and the error rates drop with increased quality as expected. Everything looks reasonable and we proceed with confidence.
+
+
+#Dereplication 
+
+```{r}
+derepFs <- derepFastq(filtFs, verbose = TRUE)
+derepRs <- derepFastq(filtRs, verbose = TRUE)
+#Name the derep-class objects by the sample names 
+names(derepFs) <- sample.names
+names(derepRs) <- sample.names
+```
+
+
+#Infer the sequence variants 
+
+```{r}
+dadaFs <- dada(derepFs, err = errF, multithread = TRUE)
+dadaRs <- dada(derepRs, err = errR, multithread = TRUE)
+```
+
+##merge overlapping reads 
+
+```{r}
+mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs, verbose = TRUE, trimOverhang = TRUE) 
+```
+
+```{r}
+head(mergers[[1]])
+```
+
+##save unassigned mergered reads 
+
+```{r}
+saveRDS(mergers, "C:/Users/aechr/Desktop/github/144l_students/Input_Data/week 6/week5_merged.rds")
+```
+
+
+##sequence table 
+
+```{r}
+seqtab <- makeSequenceTable(mergers)
+dim(seqtab) #samples by unique sequence
+```
+
+##check distribution of seqeunce lengths 
+
+```{r}
+table(nchar(getSequences(seqtab)))
+```
+
+#Remove the Chimeras 
+
+```{r}
+seqtab.nochim <- removeBimeraDenovo(seqtab, verbose = TRUE)
+dim(seqtab.nochim)
+```
+
+#proportion that are not chimeras 
+
+```{r}
+sum(seqtab.nochim)/sum(seqtab)
+```
+
+
+#Assign taxonomy using a reference table 
+
+Here we are referencing the Silva database
+
+```{r}
+taxa <- assignTaxonomy(seqtab.nochim, "C:/Users/aechr/Desktop/github/144l_students/Input_Data/week5/Reference_Database/silva_nr_v138_train_set.fa", multithread = TRUE)
+```
+
+
+#Save tables 
+
+```{r}
+saveRDS(t(seqtab.nochim), "C:/Users/aechr/Desktop/github/144l_students/Output_Data/week5/week5-seqtab-nochimtaxa.rds")
+saveRDS(taxa,"C:/Users/aechr/Desktop/github/144l_students/Output_Data/week5/week5-taxa.rds")
+
+saveRDS(t(seqtab.nochim), "C:/Users/aechr/Desktop/github/144l_students/Input_Data/week 6/week5-seqtab-nochimtaxa.rds")
+saveRDS(taxa, "C:/Users/aechr/Desktop/github/144l_students/Input_Data/week 6/week5-taxa.rds")
+```
+
+

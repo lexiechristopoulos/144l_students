@@ -1,0 +1,266 @@
+---
+title: "DADA2 Demo Notes"
+author: "Lexie Christopoulos"
+date: "11/13/2020"
+output: github_document
+---
+
+This script process trimmed (w/o primers) sequences through the DADA2 pipeline (v 1.16). 
+
+#Install and Load DADA2 and ShortRead from Bioconductor 
+
+```{r}
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+    #install.packages("BiocManager")
+#BiocManager::install(version = '3.11')
+#BiocManager::install("dada2", version = "3.11")
+#BiocManager::install("ShortRead")
+#install.packages("tidyverse")
+```
+
+
+```{r}
+library(tidyverse)
+library(dada2)
+library(ShortRead)
+```
+
+
+
+#Import file names 
+
+```{r}
+path <- "C:/Users/aechr/Desktop/github/144l_students/Input_Data/week5/ACIDD_Remin_fastq/"
+
+#store the names of the forward and reverse files as lists 
+fnFs <- list.files(path, pattern = "_R1_001.fastq", full.names = TRUE)
+
+fnRs <- list.files(path, pattern = "_R2_001.fastq", full.names = TRUE)
+```
+
+
+#Retrieve oreintation of primers 
+
+The primers targeted the V4 region and are known 514F-Y and 806RB primers 
+
+```{r}
+#store the forward and reverse primers 
+
+FWD = "GTGYCAGCMGCCGCGGTAA"
+REV = "GGACTACNVGGGTWTCTAAT"
+
+#now store all the orientations of your forward and reverse primers 
+allOrients <- function(primer) {
+  #The BioStrings work w/ DNAString objects rather than character vectors 
+  require(Biostrings)
+  dna <- DNAString(primer)
+  orients <- c(Foward = dna, Complement = complement(dna), Reverse = reverse(dna),RevComp = reverseComplement(dna))
+  #Convert back to character vector 
+  return(sapply(orients, toString))
+}
+
+#store the forward and reverse orientations seperately
+FWD.orients <- allOrients(FWD)
+REV.orients <- allOrients(REV)
+
+#view the orientations of the primers 
+FWD.orients
+
+```
+
+```{r}
+REV.orients
+```
+
+
+#search for primers 
+
+```{r}
+primerHits <- function(primer, fn) {
+  #counts number of reads in which the prime is found 
+  nhits <- vcountPattern(primer, sread(readFastq(fn)), fixed = FALSE)
+  return(sum(nhits > 0))
+}
+
+rbind(FWD.ForwardReads = sapply(FWD.orients, primerHits, fn = fnFs[[1]]),
+      FWD.ReverseReads = sapply(FWD.orients, primerHits, fn = fnRs[[1]]),
+      REV.FowardReads = sapply(REV.orients, primerHits, fn = fnFs[[1]]),
+      REV.ReverseReads = sapply(REV.orients, primerHits, fn = fnRs[[1]]))
+
+```
+
+At this point a 4x4 table is returned. If all the numbers are 0 then you don't have any primers in your sequences :) If they have numbers, use cutadapt to remove the primers, appropriately. If there are only hit of the reverse compliment in the FWD.ReverseReads and the REV.ForwardReads, that is ok - it indicates that the reads are long enough to get the primers on the end. We can trime those out with the MergePairs function later, by adding trimOverhang = T. 
+
+#Inspect read quality profiles 
+
+You should look at atleast some of the quality profiles to asses the quality of the sequencing run. 
+
+##Foward Reads 
+
+```{r fig.height=10, fig.width=12}
+plotQualityProfile(fnFs[1:12])
+```
+
+In grey-scale is the heat map of the frequency of each quality score at each base position. The mean quality score at each position is shown by the green line, and the quartiles of the quality score distribution by the orange line. 
+
+The DADA2 Tutorial advises trimming the last few nucleotides to avoid less well-controlled errors that can arise there. These quality profiles do not suggest any additional trimming is needed. We will truncate the forward reads at position 240 (trimming the last 10 nucleotides). 
+
+##Reverse Reads 
+
+```{r fig.height=10, fig.width=12}
+plotQualityProfile(fnRs[1:12])
+```
+
+Typically, the reverse reads will often be poorer quality than the foward reads, particularily at the ends. Use this information to decide where to uniformly trim your reads. If you have low quality scores throughout the reads, the you may want to resquence your samples. 
+
+The reverse reads are of worse quaility, especially at the end, which is common in Illumina sequencing. This isn't too worrisome, as DADA2 incorperates quality information into its error model which makes the algorithm robust ti lower quality sequence, but trimming as the average qualities crash will improve the algorithm's sensitivity to rare sequence variants. Based on these profiles, we will truncate the reverse reads at position 150 where the quality distrubution crashes. 
+
+#Filtering and Trimming 
+
+```{r}
+#Get the sample names 
+#define the basename of the fnFs as the first part of each fastQ file name until "_L"
+#apply this to all samples 
+sample.names <- sapply(strsplit(basename(fnFs), "_L"), '[',1)
+sample.names 
+#create a "filtered" folder in the working directory as a place to put all the new filtered fastQ files 
+filt_path <- file.path(path, "filtered")
+#add the apporpriate designation string to any new files made that will be put into the "filtered" folder
+filtFs <- file.path(filt_path, paste0(sample.names, "_F_filt.fastq"))
+filtRs <- file.path(filt_path, paste0(sample.names, "_R_filt.fastq"))
+```
+
+Below is the actual filtering step. We're using standard filtering parameters. 
+
+1. dada2 generally advises trimming the last few nucleotides for weird sequecing errors that can pop up there. 
+2. maxEE is the max number of expected errors (calculated from Q's) to allow in each read. This is a probability calculation. 
+3. minQ is a threshold Q - and read with a Q < minQ after truncating reads gets discarded. This isn't important for 16/18S. 
+
+```{r}
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen = c(240,150), maxN = 0, maxEE = c(2,2), truncQ = 2, rm.phix = TRUE, compress = TRUE)
+#look at the output, this tells you how many reads were removed 
+out
+```
+
+#Learn the error rates 
+
+```{r}
+errF <- learnErrors(filtFs, multithread = TRUE)
+errR <- learnErrors(filtRs, multithread = TRUE)
+```
+
+The dada2 algorithm makes use of a parametric error model (err) as every amplicon dataset has a different set of error rates. This is what dada2 is all about. This step creates the parameters for designating unique sequences.
+
+Each sequence has x number of reads. Dada2 uses the number of reads per sequence as well as the q-score to build this model. This algorithm assumes that your most abundant sequence is real. There is a very high probability that it is. 
+
+What the algorithm does is looks at each base pair of an individual sequence and calculates the probabilty of that base pair as an error based on the quality score of the read and the sequence of your most abundant read. It also does this for the second most abundant sequence, etc etc. Hence the message "convergence after x rounds" of running the algorithm. 
+
+```{r echo= FALSE, fig.height=10, fig.width=12, fig.align="center", message=FALSE, warning=FALSE}
+plotErrors(errF, nominalQ = TRUE)
+```
+
+```{r echo= FALSE, fig.height=10, fig.width=12, fig.align= "center" message=FALSE, warning=FALSE}
+plotErrors(errR, nominalQ = TRUE)
+```
+
+
+The error rates for each possible transition (A->C, A->G, ...) are shown. Points are the observed error rates for each consensus quality score. The black line shows the estimated error rates after convergence of the machine-learning algorithms. The red line shows the error rates expected under the nominal definition of the Q-score. Here the estimated error rates (black line) are a good fit to the observed rates (points), and the error rates drop with increased quality as expected. Everything looks reasonable and we proceed with confidence. 
+
+#Dereplication 
+
+This is another big thing that dada2 does. It combines all identical sequences into one unique sequence, keeping track of all the number of identical sequences. 
+```{r}
+derepFs <- derepFastq(filtFs, verbose = TRUE)
+derepRs <- derepFastq(filtRs, verbose = TRUE)
+#Name the derep-class objects by the sample names 
+names(derepFs) <- sample.names
+names(derepRs) <- sample.names
+```
+
+
+
+#Infer the sequence variants 
+
+Apply the core dada2 sample inference algorithm to the dereplicated data. 
+
+Infer the sequence variants in each sample, taking out the sequence variants that have excessive error rates. 
+
+So here, we are applying the error models to the data. Before, the error models were run using a subset of the data (parameterizing). Now, we're using the parameters of the model and applying it to the whole data set to see which sequences are real and which are not. 
+
+```{r}
+dadaFs <- dada(derepFs, err = errF, multithread = TRUE)
+dadaRs <- dada(derepRs, err = errR, multithread = TRUE)
+```
+
+
+merge the overlapping reads -> this will also decrease the number of sequence variants. 
+If above you had hits of the reverse complement in the FWD.ReverseReads and the REV.ReverseReads, you can trim them here by adding trimOverhang = T. 
+
+```{r}
+mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs, verbose = TRUE, trimOverhang = TRUE) 
+```
+
+inspect the merged data frame from the first sample. This will output a table. The numbers in the forward and reverse columns tell where those sequences are in the dadaFs and dadaRs files. nmatch is how many bases matched. We uniformly trimmed the amplicons so they should all be the same. 
+
+```{r}
+head(mergers[[1]])
+```
+
+save the unassigned merged reads 
+
+```{r}
+saveRDS(mergers, "C:/Users/aechr/Desktop/github/144l_students/Input_Data/week 6/dada_merged.rds")
+```
+
+construct a sequence table of our samples that is analagous to the "OTU table" produced by classcial methods 
+
+```{r}
+seqtab <- makeSequenceTable(mergers)
+dim(seqtab) #samples by unique sequence
+```
+
+check the distribution of sequence lengths 
+
+```{r}
+table(nchar(getSequences(seqtab)))
+```
+
+#Remove the Chimeras 
+
+In PCR, two or more biological sequences can attach to each other and then polymerase builds a non-biological sequence. Weird. These are artefacts that need to be removed. 
+
+```{r}
+seqtab.nochim <- removeBimeraDenovo(seqtab, verbose = TRUE)
+dim(seqtab.nochim)
+```
+
+check the proportion of sequences that are not chimeras 
+
+```{r}
+sum(seqtab.nochim)/sum(seqtab)
+```
+
+
+#Assign taxonomy using a reference database 
+
+here we are referencing the Silva database 
+
+```{r}
+taxa <- assignTaxonomy(seqtab.nochim, "C:/Users/aechr/Desktop/github/144l_students/Input_Data/week5/Reference_Database/silva_nr_v138_train_set.fa", multithread = TRUE)
+
+```
+
+
+create a table out of the taxa data (one with the sequence data and assignments, and one with just all the taxa)
+
+these are the tables you want to save !! 
+
+
+```{r}
+saveRDS(t(seqtab.nochim), "C:/Users/aechr/Desktop/github/144l_students/Output_Data/week5/seqtab-nochimtaxa.rds")
+saveRDS(taxa,"C:/Users/aechr/Desktop/github/144l_students/Output_Data/week5/taxa.rds")
+
+saveRDS(t(seqtab.nochim), "C:/Users/aechr/Desktop/github/144l_students/Input_Data/week 6/seqtab-nochimtaxa.rds")
+saveRDS(taxa, "C:/Users/aechr/Desktop/github/144l_students/Input_Data/week 6/taxa.rds")
+```
+
