@@ -13,8 +13,11 @@ This document shows how **individual bottle** TOC/DOC data from the 2018  remine
 library(tidyverse)
 library(readxl)
 library(lubridate)
+#install.packages("lmodel2")
 library(lmodel2)
+#install.packages("zoo")
 library(zoo)
+#install.packages("patchwork")
 library(patchwork)
 library(praise)
 ```
@@ -33,6 +36,9 @@ data <- read_excel("C:/Users/aechr/Desktop/github/144l_students/Input_Data/week4
 ```{r}
 glimpse(metadata)
 glimpse(data)
+
+unique(metadata$Treatment)
+
 ```
 
 #Prepare Data 
@@ -46,7 +52,7 @@ toc <- joined %>%
   mutate(interv = int_length(interval(first(Datetime), Datetime)), hours = interv/3600, days = hours/24) %>%
   ungroup() %>% 
   rename(sd_TOC = TOC_sd, sd_PTOC = PTOC_sd) %>% 
-  select(Experiment, Timepoint, Target_DOC_Amendment, Datetime, Bottle, Treatment,TOC:sd_PTOC, hours, days) 
+  select(Experiment, Timepoint, Target_DOC_Amendment, Datetime, Bottle, Treatment, DNA_SampleID, TOC:sd_PTOC, hours, days) 
 
 glimpse(toc)
 ```
@@ -61,7 +67,7 @@ pivot_toc <- toc %>%
   pivot_longer(TOC:PTOC, names_to = "sample", values_to = "value")
 
 pivot_toc_sd <- toc %>% 
-  select(Experiment, Bottle, Treatment, days, sd_TOC, sd_PTOC) %>% 
+  select(Experiment, Bottle, Treatment, days, DNA_SampleID, sd_TOC, sd_PTOC) %>% 
   pivot_longer(sd_TOC:sd_PTOC, names_to = "sample", names_prefix = "sd_", values_to = "sd")
 
 pivoted <- left_join(pivot_toc, pivot_toc_sd) %>% 
@@ -133,7 +139,7 @@ reg.data %>%
 bc <- read_rds("C:/Users/aechr/Desktop/github/144l_students/Output_Data/week3/Bacterial_Abundance_Processed_Data.rds")
 
 merge <- left_join(toc, bc) %>% 
-  select(Experiment:days, TOC:sd_PTOC, cells:diff_ln_cells, bc, ave_bc, sd_bc, everything(), -c(contains("Sample")) ) %>% 
+  select(Experiment:days,DNA_SampleID, TOC:sd_PTOC, cells:diff_ln_cells, bc, ave_bc, sd_bc, everything()) %>% 
   group_by(Experiment, Treatment, Bottle) %>% 
   fill(exp_start:sd_lag) %>% 
   ungroup()
